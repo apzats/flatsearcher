@@ -1,9 +1,8 @@
 <?php
 
-//Config params are set separately ($myid, $token, $db_path);
 require("conf.php");
 
-$db = new SQLite3();
+$db = new SQLite3(__DIR__.'/flatsearcher.db');
 if(!$db) {
   echo $db->lastErrorMsg();
 }
@@ -17,39 +16,123 @@ while($row = $ret->fetchArray(SQLITE3_ASSOC) ) {
 $ret = $db->query('SELECT * FROM groups');
 $request = [];
 while($row = $ret->fetchArray(SQLITE3_ASSOC) ) {
+	$ret2 = $db->query("SELECT * FROM group_topic where id_group = {$row['IDgroup']}");
+	$topics = [];
+	while($row2 = $ret2->fetchArray(SQLITE3_ASSOC) ) {
+		$topics[] = $row2['id_topic'];
+	}
 	$request[]=
 	[
 		'group_id' => $row["IDgroup"],
-		'count' => $row["HowMany"]
+		'topics' => $topics,
+		'count' => $row["HowMany"],
+		'nowall' => $row["no_wall"]
 	];
+}
+
+// $request = [
+// 	[
+// 		'group_id' => 13178749,
+// 		'topics' => [35647131],
+// 		'count' => 10,
+// 		'nowall' => 0
+// 	]
+// ];
+
+// $keywords = [
+// 	'арбатск', 'минимализм', 'лубянка', 'чувви', 'сокольники', 'видное', 'кантемировск'
+// ];
+
+foreach ($request as $item) {
+	if ($item['nowall']==0) {
+		wallGet($db, $item['group_id'],$item['count'],$config,$keywords);
+	}
+	if (!empty($item['topics'])) {
+		boardGetComments($db, $item['group_id'], $item['topics'][0],100,$config, $keywords);
+	}	
 }
 
 $db->close();
 
-foreach ($request as $item) {
-	$url = "https://api.vk.com/method/wall.get?owner_id=-{$item['group_id']}&count={$item['count']}&access_token=$token&v=5.37";
- 	$raw_data=file_get_contents($url);
- 	echo '<pre>';
+function boardGetComments($db, $groupid,$topicid,$howMany,$config,$keywords)
+{
+	$url = "https://api.vk.com/method/board.getComments?group_id={$groupid}&topic_id={$topicid}&count={$howMany}&sort=desc&access_token={$config['token']}&v={$config['v']}";
+	// $raw_data=file_get_contents($url);
+	$raw_data=getSSLPage($url);
  	$pars=json_decode($raw_data, true);
  	$ads=$pars['response']['items'];
  	foreach ($ads as $key => $value) {
  		$ads_body = cleaner($value['text']);
+
  		foreach ($keywords as $meaning) {
  			if (mb_stripos($ads_body, $meaning)!==false) {
- 				$url2="https://vk.com/wall-{$item['group_id']}_{$value['id']}";
- 				$reason = urlencode(" - $meaning");
- 				$message="https://api.vk.com/method/messages.send?user_id=$myid&message=$url2$reason&access_token=$token&v=5.37";
- 				var_dump($message);
- 				$result = file_get_contents($message);
- 				var_dump($result);
-
+ 				$message="https://vk.com/topic-{$groupid}_{$topicid}?post={$value['id']}";
+ 				sendMessage($db, $message, $meaning, $config);
  			}
  		}
  	}
 
 }
 
+function wallGet($db, $groupid,$howMany,$config,$keywords) 
+{
+	$url = "https://api.vk.com/method/wall.get?owner_id=-{$groupid}&count={$howMany}&access_token={$config['token']}&v={$config['v']}";
+ 	// $raw_data=file_get_contents($url);
+ 	$raw_data=getSSLPage($url);
+ 	$pars=json_decode($raw_data, true);
+ // 	print "<pre>";
+	// print_r($pars);
+	// print "</pre>";
+ // 	die();
+ 	$ads=$pars['response']['items'];
+ 	foreach ($ads as $key => $value) {
+ 		$ads_body = cleaner($value['text']);
+	 // 	print "<pre>";
+		// print_r($ads_body);
+		// print "</pre>";
+	 // 	print "<br>";
+	 // 	print "<br>";
+ 		foreach ($keywords as $meaning) {
+ 			if (mb_stripos($ads_body, $meaning)!==false) {
+ 				$message = "https://vk.com/wall-{$groupid}_{$value['id']}";
+				sendMessage($db, $message, $meaning, $config);
+ 			}
+ 		}
+ 	}
+} 
+
+function sendMessage($db, $message, $keyword, $config)
+{
+	$keyword = urlencode(" - $keyword");
+	$ret = $db->query("SELECT * FROM Sentmessages where link = '$message'");
+	$row = $ret->fetchArray(SQLITE3_ASSOC);
+	if (!$row) {
+		$sent_message="https://api.vk.com/method/messages.send?user_id={$config['myid']}&message=$message$keyword&access_token={$config['token']}&v={$config['v']}";
+		$result = getSSLPage($sent_message);
+		$ret2 = $db->query("INSERT INTO Sentmessages (id,link) VALUES (NULL,'$message');");
+		if (!$ret2) {
+			return false;
+		}
+	}
+	else {
+		return false;	
+	}
+	return $result;
+}
+
 function cleaner($text) {
 	return preg_replace("#[^А-яЁё ]#u",'', $text);
 
+}
+
+function getSSLPage($url) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_HEADER, false);
+    curl_setopt($ch, CURLOPT_URL, $url);
+	curl_setopt( $ch, CURLOPT_SSL_VERIFYPEER, false );
+	curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    // curl_setopt($ch, CURLOPT_SSLVERSION,3); 
+    $result = curl_exec($ch);
+    curl_close($ch);
+    return $result;
 }
